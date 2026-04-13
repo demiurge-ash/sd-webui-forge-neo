@@ -1,8 +1,8 @@
-<h1 align="center">Stable Diffusion WebUI Forge - Neo</h1>
+<h1 align="center">Forge NeoWebUI Forge - Ash Edition</h1>
 
-<p align="center"><sup>
-[ <b>Neo</b> | <a href="https://github.com/Haoming02/sd-webui-forge-classic/tree/classic#stable-diffusion-webui-forge---classic">Classic</a> ]
-</sup></p>
+<p align="center">
+with some custom features
+</p>
 
 <p align="center"><img src="html\ui.webp" width=512 alt="UI"></p>
 
@@ -15,7 +15,7 @@ The name "Forge" is inspired by "Minecraft Forge". This project aims to become t
 
 <br>
 
-"**Neo**" mainly serves as an continuation for the "`latest`" version of Forge, which was built on [Gradio](https://github.com/gradio-app/gradio) `4.40.0` before lllyasviel became too busy... Additionally, this fork is focused on optimization and usability, with the main goal of being able to run the latest popular models via an easy-to-use GUI.
+"**Neo**" mainly serves as a continuation for the "`latest`" version of Forge, which was built on [Gradio](https://github.com/gradio-app/gradio) `4.40.0` before lllyasviel became too busy... Additionally, this fork is focused on optimization and usability, with the main goal of being able to run the latest popular models via an easy-to-use GUI.
 
 > [!Tip]
 > [How to Install](#installation)
@@ -325,7 +325,7 @@ The name "Forge" is inspired by "Minecraft Forge". This project aims to become t
 0. Install **[git](https://git-scm.com/downloads)**
 1. Clone the Repo
     ```bash
-    git clone https://github.com/Haoming02/sd-webui-forge-classic sd-webui-forge-neo --branch neo
+    git clone https://github.com/demiurge-ash/sd-webui-forge-neo sd-webui-forge-neo --branch neo
     ```
 
 2. Setup Python
@@ -408,7 +408,7 @@ The name "Forge" is inspired by "Minecraft Forge". This project aims to become t
 - **Issues** about 3rd-party Extensions will simply be ignored
     - extension should support the UI, not the other way around
 - **Issues** caused by [StabilityMatrix](https://github.com/LykosAI/StabilityMatrix) will simply be ignored
-    - only open an Issue if you can reproduce it on a clean install following the official [Installation](#installation) instruction
+    - only open an Issue if you can reproduce it on a clean installation following the official [Installation](#installation) instruction
 
 > [!Caution]
 > - If you post **NSFW** images/videos, you will immediately be banned
@@ -422,23 +422,10 @@ The name "Forge" is inspired by "Minecraft Forge". This project aims to become t
 <br>
 
 <p align="center">
-Special thanks to <b>AUTOMATIC1111</b>, <b>lllyasviel</b>, and <b>comfyanonymous</b>, <b>kijai</b>, <b>city96</b>, <br>
+Special thanks to <b>AUTOMATIC1111</b>, <b>lllyasviel</b>, and <b>comfyanonymous</b>, <b>kijai</b>, <b>city96</b>, <b>Haoming02</b>, <br>
 along with the rest of the contributors, <br>
 for their invaluable efforts in the open-source image generation community
 </p>
-
-<br>
-
-<p align="right">
-<sub><i>
-Buy me a <a href="https://ko-fi.com/Haoming">Coffee</a> ☕~
-</i></sub>
-<br>
-<sub><i>
-<a href="https://paypal.me/hmgamingdonation">PayPal</a> me 💳~
-</i></sub>
-</p>
-
 <br>
 
 <p align="center">
