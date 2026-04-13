@@ -342,7 +342,7 @@ class ForgeCanvas {
             if (self.dragging) self.handleDragEnd(e, true);
         });
 
-        container.addEventListener("wheel", (e) => {
+        container.addEventListener("wheel_disable", (e) => {
             if (!self.img) return;
             e.preventDefault();
             const delta = e.deltaY * -0.001;
