@@ -19,7 +19,7 @@ class PresetArch(Enum):
 
 SAMPLERS = {
     PresetArch.sd: "Euler a",
-    PresetArch.xl: "Euler a",
+    PresetArch.xl: "Restart",
     PresetArch.flux: "Euler",
     PresetArch.klein: "Euler",
     PresetArch.qwen: "LCM",
@@ -31,9 +31,9 @@ SAMPLERS = {
 
 SCHEDULERS = {
     PresetArch.sd: "Automatic",
-    PresetArch.xl: "Automatic",
-    PresetArch.flux: "Beta",
-    PresetArch.klein: "Beta",
+    PresetArch.xl: "Align Your Steps",
+    PresetArch.flux: "FlowMatchEulerDiscrete",
+    PresetArch.klein: "FlowMatchEulerDiscrete",
     PresetArch.qwen: "Normal",
     PresetArch.lumina: "Simple",
     PresetArch.zit: "Beta",
