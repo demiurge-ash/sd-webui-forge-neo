@@ -16,8 +16,24 @@ from .quant_ops import (  # noqa
     QUANT_ALGOS,
     QuantizedTensor,
     TensorCoreFP8Layout,
+    TensorWiseINT8Layout,
     get_layout_class,
 )
+
+try:
+    from .operations_triton import triton_int8_linear, triton_int8_linear_per_row
+except ImportError:
+    TRITON_AVAILABLE = False
+else:
+    TRITON_AVAILABLE = True
+
+    if torch.cuda.is_available():
+        props = torch.cuda.get_device_properties()
+        if props.major < 8:
+            TRITON_AVAILABLE = False
+
+
+from .quant_rotation import build_hadamard, rotate_activation
 
 
 def _quantized_apply(module: torch.nn.Module, fn, recurse=True):
@@ -27,10 +43,11 @@ def _quantized_apply(module: torch.nn.Module, fn, recurse=True):
     for key, param in module._parameters.items():
         if param is None:
             continue
-        p = fn(param)
-        if (not torch.is_inference_mode_enabled()) and p.is_inference():
-            p = p.clone()
-        module.register_parameter(key, torch.nn.Parameter(p, requires_grad=False))
+        p: torch.Tensor = fn(param)
+        try:
+            module.register_parameter(key, torch.nn.Parameter(p, requires_grad=False))
+        except RuntimeError:
+            module.register_parameter(key, torch.nn.Parameter(p.clone(), requires_grad=False))
     for key, buf in module._buffers.items():
         if buf is not None:
             module._buffers[key] = fn(buf)
@@ -97,6 +114,7 @@ def _load_quantized_module(module: torch.nn.Module, super_load, state_dict: dict
             scale = pop_scale("weight_scale")
             if scale is None:
                 raise ValueError(f"Missing INT8 weight scale for layer {layer_name}")
+            module._per_row = scale.dim() == 2 and scale.shape[1] == 1
             scales = {"scale": scale}
             params_conf = layer_conf.get("params", {})
             if not isinstance(params_conf, dict):
@@ -104,6 +122,19 @@ def _load_quantized_module(module: torch.nn.Module, super_load, state_dict: dict
             if layer_conf.get("convrot", params_conf.get("convrot", False)):
                 scales["convrot"] = True
                 scales["convrot_groupsize"] = int(layer_conf.get("convrot_groupsize", params_conf.get("convrot_groupsize", 256)))
+        elif module.quant_format == "convrot_w4a4":
+            scale = pop_scale("weight_scale")
+            if scale is None:
+                raise ValueError(f"Missing ConvRot W4A4 weight scale for layer {layer_name}")
+            params_conf = layer_conf.get("params", {})
+            if not isinstance(params_conf, dict):
+                params_conf = {}
+            scales = {
+                "scale": scale,
+                "convrot_groupsize": int(layer_conf.get("convrot_groupsize", params_conf.get("convrot_groupsize", 256))),
+                "quant_group_size": 64,
+                "linear_dtype": layer_conf.get("linear_dtype", params_conf.get("linear_dtype", "int4")),
+            }
         else:
             raise ValueError(f"Unsupported quantization format: {module.quant_format}")
 
@@ -151,6 +182,11 @@ def _quantized_weight_state_dict(module: torch.nn.Module, sd: dict[str, torch.Te
         if module.quant_format == "int8_tensorwise" and getattr(params, "convrot", False):
             quant_conf["convrot"] = True
             quant_conf["convrot_groupsize"] = getattr(params, "convrot_groupsize", 256)
+        elif module.quant_format == "convrot_w4a4":
+            quant_conf["convrot_groupsize"] = getattr(params, "convrot_groupsize", 256)
+            linear_dtype = getattr(params, "linear_dtype", "int4")
+            if linear_dtype != "int4":
+                quant_conf["linear_dtype"] = linear_dtype
         if extra_quant_conf:
             quant_conf.update(extra_quant_conf)
         sd[f"{prefix}comfy_quant"] = torch.tensor(list(json.dumps(quant_conf).encode("utf-8")), dtype=torch.uint8)
@@ -185,7 +221,6 @@ def mixed_precision_ops(quant_config={}, compute_dtype=torch.bfloat16, full_prec
                 else:
                     self.register_parameter("bias", None)
 
-                self.tensor_class = None
                 self._full_precision_mm = MixedPrecisionOps._full_precision_mm
                 self._full_precision_mm_config = False
 
@@ -201,7 +236,7 @@ def mixed_precision_ops(quant_config={}, compute_dtype=torch.bfloat16, full_prec
 
             def forward(self, input, *args, **kwargs):
                 input_shape = input.shape
-                reshaped_3d = False
+                reshaped_nd = False
 
                 _use_quantized = getattr(self, "layout_type", None) is not None and not isinstance(input, QuantizedTensor) and not self._full_precision_mm and not getattr(self, "forge_force_cast_weights", False) and len(self.weight_function) == 0 and len(self.bias_function) == 0
                 quantize_input = QUANT_ALGOS.get(getattr(self, "quant_format", None), {}).get("quantize_input", True)
@@ -209,34 +244,62 @@ def mixed_precision_ops(quant_config={}, compute_dtype=torch.bfloat16, full_prec
                 assert not input.requires_grad
 
                 if _use_quantized and quantize_input:
-                    input_reshaped = input.reshape(-1, input_shape[2]) if input.ndim == 3 else input
+                    input_reshaped = input.reshape(-1, input_shape[-1]) if input.ndim >= 3 else input
 
                     if input_reshaped.ndim == 2:
-                        reshaped_3d = input.ndim == 3
+                        reshaped_nd = input.ndim >= 3
                         scale = getattr(self, "input_scale", None)
                         if scale is not None:
                             scale = cast_to_device(scale, input.device, None)
                         input = QuantizedTensor.from_float(input_reshaped, self.layout_type, scale=scale)
 
-                weight_only_quant = _use_quantized and not quantize_input and isinstance(self.weight, QuantizedTensor)
+                _double_cast = self.parameters_manual_cast and (len(self.weight_function) > 0 or len(self.bias_function) > 0)
 
-                if weight_only_quant:
-                    weight, bias, signal = weights_manual_cast(
-                        self,
-                        x=None,
-                        dtype=self.weight.dtype,
-                        device=input.device,
-                        bias_dtype=input.dtype,
-                    )
-                    weight = weight.to(dtype=input.dtype)
+                if TRITON_AVAILABLE and getattr(self, "quant_format", None) == "int8_tensorwise" and not (_double_cast or self._full_precision_mm):
+                    if len(self.weight_function) > 0 or len(self.bias_function) > 0:
+                        _weight, bias, signal = weights_manual_cast(self, x=None, dtype=self.weight.dtype, device=input.device, bias_dtype=input.dtype)
+                        weight, params = TensorWiseINT8Layout.quantize(
+                            tensor=_weight,
+                            scale="recalculate",
+                            is_weight=True,
+                            per_channel=True,
+                            convrot=getattr(self.weight.params, "convrot", False),
+                            convrot_groupsize=getattr(self.weight.params, "convrot_groupsize", 256),
+                        )
+                        scale: torch.Tensor = params.scale.to(device=input.device, non_blocking=True)
+                    elif self.parameters_manual_cast:
+                        weight, bias, signal = weights_manual_cast(self, x=None, dtype=torch.int8, device=input.device, bias_dtype=input.dtype)
+                        scale: torch.Tensor = self.weight.params.scale.to(device=input.device, non_blocking=True)
+                    else:
+                        weight, bias, signal = self.weight._qdata, self.bias, None
+                        scale: torch.Tensor = self.weight.params.scale.to(device=input.device, non_blocking=True)
+
+                    if getattr(self.weight.params, "convrot", False):
+                        group_size: int = getattr(self.weight.params, "convrot_groupsize", 256)
+                        H = build_hadamard(group_size, device=input.device, dtype=input.dtype)
+                        input = rotate_activation(input, H, group_size=group_size)
+
+                    compute_dtype: torch.dtype = input.dtype if input.dtype in (torch.float16, torch.bfloat16) else torch.bfloat16
+
+                    with main_stream_worker(weight, bias, signal):
+                        if self._per_row:
+                            output = triton_int8_linear_per_row(input, weight, scale, bias, compute_dtype)
+                        else:
+                            output = triton_int8_linear(input, weight, scale, bias, compute_dtype)
                 else:
-                    weight, bias, signal = weights_manual_cast(self, x=input)
+                    weight_only_quant = _use_quantized and not quantize_input and isinstance(self.weight, QuantizedTensor)
 
-                with main_stream_worker(weight, bias, signal):
-                    output = torch.nn.functional.linear(input, weight, bias)
+                    if weight_only_quant:
+                        weight, bias, signal = weights_manual_cast(self, x=None, dtype=self.weight.dtype, device=input.device, bias_dtype=input.dtype)
+                        weight = weight.to(dtype=input.dtype)
+                    else:
+                        weight, bias, signal = weights_manual_cast(self, x=input)
 
-                if reshaped_3d:
-                    output = output.reshape((input_shape[0], input_shape[1], self.weight.shape[0]))
+                    with main_stream_worker(weight, bias, signal):
+                        output = torch.nn.functional.linear(input, weight, bias)
+
+                if reshaped_nd:
+                    output = output.reshape((*input_shape[:-1], self.weight.shape[0]))
 
                 return output
 

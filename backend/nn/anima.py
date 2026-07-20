@@ -15,10 +15,16 @@ from einops.layers.torch import Rearrange
 from torch import nn
 from torchvision.transforms import InterpolationMode, functional
 
+from backend.args import dynamic_args
 from backend.attention import attention_function
 from backend.memory_management import is_device_mps
-from backend.operations import scaled_dot_product_attention
+from backend.operations import (
+    main_stream_worker,
+    scaled_dot_product_attention,
+    weights_manual_cast,
+)
 from backend.utils import pad_to_patch_size
+from modules.shared import opts
 
 # region DiT
 
@@ -127,11 +133,16 @@ class SelfCrossAttention(nn.Module):
             (q, k, v),
         )
 
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-        v = self.v_norm(v)
         if self.is_SelfAttn and rope_emb is not None:
-            q, k = ck.apply_rope_split_half(q, k, rope_emb)
+            q_scale, _, q_offload_stream = weights_manual_cast(self.q_norm, q)
+            k_scale, _, k_offload_stream = weights_manual_cast(self.k_norm, k)
+            with main_stream_worker(q_scale, None, q_offload_stream), main_stream_worker(k_scale, None, k_offload_stream):
+                q, k = ck.rms_rope_split_half(q, k, rope_emb, q_scale, k_scale, self.q_norm.eps)
+        else:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
+
+        v = self.v_norm(v)
 
         return q, k, v
 
@@ -457,6 +468,13 @@ class Anima(nn.Module):
 
     def forward(self, x: torch.Tensor, timesteps: torch.Tensor, context: torch.Tensor, padding_mask: Optional[torch.Tensor] = None, **kwargs):
         orig_shape = list(x.shape)
+
+        ref_latents: list[torch.Tensor] = dynamic_args.ref_latents if opts.anima_do_reference else []
+        for ref in ref_latents:
+            if x.shape[0] == 2:  # batch_cond_uncond
+                ref = torch.cat((ref, ref), dim=0)
+            x = torch.cat((x, ref.to(x)), dim=2)
+
         x = pad_to_patch_size(x, (self.patch_temporal, self.patch_spatial, self.patch_spatial))
         x_B_C_T_H_W = x
         timesteps_B_T = timesteps
