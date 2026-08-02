@@ -241,13 +241,6 @@ else:
     else:
         FLASH_IS_AVAILABLE = True
 
-try:
-    import bitsandbytes  # noqa: F401
-except Exception:
-    BNB_IS_AVAILABLE = False
-else:
-    BNB_IS_AVAILABLE = True
-
 
 def amd_min_version(device: torch.device = None, min_rdna_version: int = 0) -> bool:
     if not is_amd():
@@ -401,8 +394,13 @@ except Exception:
     torch_device_name = ""
     logger.warning("Could not determine default device...")
 
-if "rtx" in torch_device_name.lower() and not args.cuda_malloc:
-    logger.warning("Hint: your device supports --cuda-malloc for potential speed improvements")
+if "rtx" in torch_device_name.lower():
+    if not args.cuda_malloc:
+        logger.warning("Hint: your device supports --cuda-malloc for potential speed improvements")
+
+    props = torch.cuda.get_device_properties()
+    if props.major >= 8 and not args.disable_int8_override:
+        logger.warning("Hint: your device supports --disable-int8-override for potential speed improvements (when using int8 models)")
 
 
 def bake_gguf_model(model):
@@ -468,7 +466,7 @@ class LoadedModel:
         return self.model.model_size() - self.model.loaded_size()
 
     def model_memory_required(self, device):
-        if device == self.model.current_loaded_device():
+        if device == self.model.current_device:
             return self.model_offloaded_memory()
         else:
             return self.model_memory()
@@ -1008,7 +1006,7 @@ def cast_to(weight: torch.nn.Parameter, dtype: torch.dtype = None, device: torch
         with context or nullcontext():
             return weight.to(dtype=dtype, copy=copy)
 
-    if type(weight) not in (torch.Tensor, torch.nn.Parameter, QuantizedTensor):  # GGUF / BnB
+    if type(weight) not in (torch.Tensor, torch.nn.Parameter, QuantizedTensor):  # GGUF
         with context or nullcontext():
             return weight.to(dtype=dtype, device=device, non_blocking=non_blocking, copy=copy)
 
@@ -1057,10 +1055,6 @@ def flash_enabled() -> bool:
     if not is_nvidia():
         return False
     return FLASH_IS_AVAILABLE
-
-
-def bnb_enabled() -> bool:
-    return BNB_IS_AVAILABLE
 
 
 def pytorch_attention_enabled() -> bool:
